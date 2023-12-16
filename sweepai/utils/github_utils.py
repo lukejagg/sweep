@@ -9,8 +9,10 @@ import time
 import traceback
 from dataclasses import dataclass
 from functools import cached_property
+from typing import Any
 
 import git
+import rapidfuzz
 import requests
 from github import Github
 from jwt import encode
@@ -37,7 +39,7 @@ def make_valid_string(string: str):
 def get_jwt():
     signing_key = GITHUB_APP_PEM
     app_id = GITHUB_APP_ID
-    payload = {"iat": int(time.time()), "exp": int(time.time()) + 600, "iss": app_id}
+    payload = {"iat": int(time.time()), "exp": int(time.time()) + 590, "iss": app_id}
     return encode(payload, signing_key, algorithm="RS256")
 
 
@@ -62,7 +64,6 @@ def get_token(installation_id: int):
         except SystemExit:
             raise SystemExit
         except Exception as e:
-            logger.error(e)
             time.sleep(timeout)
     raise Exception(
         "Could not get token, please double check your PRIVATE_KEY and GITHUB_APP_ID in the .env file. Make sure to restart uvicorn after."
@@ -102,10 +103,15 @@ class ClonedRepo:
     installation_id: str
     branch: str | None = None
     token: str | None = None
+    repo: Any | None = None
 
     @cached_property
     def cached_dir(self):
-        self.repo = Github(self.token).get_repo(self.repo_full_name)
+        self.repo = (
+            Github(self.token).get_repo(self.repo_full_name)
+            if not self.repo
+            else self.repo
+        )
         self.branch = self.branch or SweepConfig.get_branch(self.repo)
         return os.path.join(
             REPO_CACHE_BASE_DIR,
@@ -123,7 +129,11 @@ class ClonedRepo:
 
     @cached_property
     def repo_dir(self):
-        self.repo = Github(self.token).get_repo(self.repo_full_name)
+        self.repo = (
+            Github(self.token).get_repo(self.repo_full_name)
+            if not self.repo
+            else self.repo
+        )
         self.branch = self.branch or SweepConfig.get_branch(self.repo)
         curr_time_str = str(time.time()).encode("utf-8")
         hash_obj = hashlib.sha256(curr_time_str)
@@ -164,24 +174,30 @@ class ClonedRepo:
                 repo = git.Repo.clone_from(self.clone_url, self.cached_dir)
             logger.info("Repo already cached, copying")
         logger.info("Copying repo...")
-        shutil.copytree(self.cached_dir, self.repo_dir)
+        shutil.copytree(
+            self.cached_dir, self.repo_dir, symlinks=True, copy_function=shutil.copy
+        )
         logger.info("Done copying")
         repo = git.Repo(self.repo_dir)
         return repo
 
     def __post_init__(self):
         subprocess.run(["git", "config", "--global", "http.postBuffer", "524288000"])
-        self.repo = Github(self.token).get_repo(self.repo_full_name)
+        self.repo = (
+            Github(self.token).get_repo(self.repo_full_name)
+            if not self.repo
+            else self.repo
+        )
         self.commit_hash = self.repo.get_commits()[0].sha
         self.token = self.token or get_token(self.installation_id)
         self.git_repo = self.clone()
         self.branch = self.branch or SweepConfig.get_branch(self.repo)
 
     def delete(self):
-        shutil.rmtree(self.repo_dir)
         try:
+            shutil.rmtree(self.repo_dir)
             os.remove(self.zip_path)
-        except FileNotFoundError:
+        except:
             pass
 
     def list_directory_tree(
@@ -203,7 +219,7 @@ class ClonedRepo:
 
         # Default values if parameters are not provided
         if included_directories is None:
-            included_directories = [] # gets all directories
+            included_directories = []  # gets all directories
         if excluded_directories is None:
             excluded_directories = [".git"]
         else:
@@ -279,7 +295,9 @@ class ClonedRepo:
         for snippet_path in snippet_paths:
             file_list = ""
             snippet_depth = len(snippet_path.split("/"))
-            for directory in snippet_path.split("/")[snippet_depth // 2:-1]: # heuristic
+            for directory in snippet_path.split("/")[
+                snippet_depth // 2 : -1
+            ]:  # heuristic
                 file_list += directory + "/"
                 prefixes.append(file_list.rstrip("/"))
             file_list += snippet_path.split("/")[-1]
@@ -364,6 +382,54 @@ class ClonedRepo:
         except:
             logger.error(f"An error occurred: {traceback.print_exc()}")
         return commit_history
+
+    def get_similar_file_paths(self, file_path: str, limit: int = 10):
+        # Fuzzy search over file names
+        file_name = os.path.basename(file_path)
+        all_file_paths = self.get_file_list()
+        files_with_matching_name = []
+        files_without_matching_name = []
+        for file_path in all_file_paths:
+            if file_name in file_path:
+                files_with_matching_name.append(file_path)
+            else:
+                files_without_matching_name.append(file_path)
+        files_with_matching_name = sorted(
+            files_with_matching_name,
+            key=lambda file_path: rapidfuzz.fuzz.ratio(file_name, file_path),
+            reverse=True,
+        )
+        files_without_matching_name = sorted(
+            files_without_matching_name,
+            key=lambda file_path: rapidfuzz.fuzz.ratio(file_name, file_path),
+            reverse=True,
+        )
+        all_files = files_with_matching_name + files_without_matching_name
+        return all_files[:limit]
+
+
+@dataclass
+class MockClonedRepo(ClonedRepo):
+    _repo_dir: str = ""
+
+    @classmethod
+    def from_dir(cls, repo_dir: str, **kwargs):
+        return cls(_repo_dir=repo_dir, **kwargs)
+
+    @property
+    def cached_dir(self):
+        return self._repo_dir
+
+    @property
+    def repo_dir(self):
+        return self._repo_dir
+
+    @property
+    def git_repo(self):
+        return git.Repo(self.repo_dir)
+
+    def __post_init__(self):
+        return self
 
 
 def get_file_names_from_query(query: str) -> list[str]:

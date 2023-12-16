@@ -51,7 +51,11 @@ def make_pr(
     search_query = (title + summary).strip("\n")
     formatted_query = (f"{title.strip()}\n{summary.strip()}").strip("\n")
     repo_context_manager = prep_snippets(cloned_repo, search_query)
-    repo_context_manager = get_relevant_context(formatted_query, repo_context_manager)
+    repo_context_manager = get_relevant_context(
+        formatted_query,
+        repo_context_manager,
+        chat_logger=chat_logger,
+    )
     snippets = repo_context_manager.current_top_snippets
     tree = str(repo_context_manager.dir_obj)
     message_summary = summary
@@ -133,8 +137,8 @@ def make_pr(
         if changed_file:
             changed_files.append(file_change_request.filename)
         sandbox_response: SandboxResponse | None = sandbox_response
-        format_exit_code = (
-            lambda exit_code: "✓" if exit_code == 0 else f"❌ (`{exit_code}`)"
+        format_sandbox_success = (
+            lambda success: "✓" if success else f"❌ (`Sandbox Failed`)"
         )
     pr_changes = response["pull_request"]
     pr_actions_message = (

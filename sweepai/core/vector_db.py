@@ -33,6 +33,7 @@ from sweepai.logn.cache import file_cache
 from sweepai.utils.event_logger import posthog
 from sweepai.utils.github_utils import ClonedRepo
 from sweepai.utils.hash import hash_sha256
+from sweepai.utils.progress import TicketProgress
 from sweepai.utils.scorer import compute_score, get_scores
 
 MODEL_DIR = "/tmp/cache/model"
@@ -184,12 +185,10 @@ def get_deeplake_vs_from_repo(
     blocked_dirs = get_blocked_dirs(repo)
     sweep_config.exclude_dirs.extend(blocked_dirs)
     file_list, snippets, index = prepare_lexical_search_index(
-        cloned_repo, sweep_config, repo_full_name
+        cloned_repo, sweep_config, repo_full_name, TicketProgress(tracking_id="none")
     )
     # scoring for vector search
-    files_to_scores = compute_vector_search_scores(
-        file_list, cloned_repo, repo_full_name
-    )
+    files_to_scores = compute_vector_search_scores(file_list, cloned_repo)
 
     collection_name, documents, ids, metadatas = prepare_documents_metadata_ids(
         snippets, cloned_repo, files_to_scores, start, repo_full_name
@@ -225,7 +224,7 @@ def prepare_documents_metadata_ids(
     return collection_name, documents, ids, metadatas
 
 
-def compute_vector_search_scores(file_list, cloned_repo, repo_full_name):
+def compute_vector_search_scores(file_list, cloned_repo):
     files_to_scores = {}
     score_factors = []
     for file_path in tqdm(file_list):
@@ -253,20 +252,26 @@ def compute_vector_search_scores(file_list, cloned_repo, repo_full_name):
     # compute all scores
     all_scores = get_scores(score_factors)
     files_to_scores = {
-        file_path: score for file_path, score in zip(file_list, all_scores)
+        file_path[len(cloned_repo.cached_dir) + 1 :]: score
+        for file_path, score in zip(file_list, all_scores)
     }
-    logger.info(f"Found {len(file_list)} files in repository {repo_full_name}")
     return files_to_scores
 
 
-def prepare_lexical_search_index(cloned_repo, sweep_config, repo_full_name):
+def prepare_lexical_search_index(
+    cloned_repo,
+    sweep_config,
+    repo_full_name,
+    ticket_progress: TicketProgress | None = None,
+):
     snippets, file_list = repo_to_chunks(cloned_repo.cached_dir, sweep_config)
     logger.info(f"Found {len(snippets)} snippets in repository {repo_full_name}")
     # prepare lexical search
     index = prepare_index_from_snippets(
-        snippets, len_repo_cache_dir=len(cloned_repo.cached_dir) + 1
+        snippets,
+        len_repo_cache_dir=len(cloned_repo.cached_dir) + 1,
+        ticket_progress=ticket_progress,
     )
-    logger.print("Prepared index from snippets")
     return file_list, snippets, index
 
 

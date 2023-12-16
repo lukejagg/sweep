@@ -9,12 +9,7 @@ import openai
 from github.Commit import Commit
 from github.Repository import Repository
 
-from sweepai.config.client import (
-    DEFAULT_RULES,
-    DEFAULT_RULES_STRING,
-    SweepConfig,
-    get_blocked_dirs,
-)
+from sweepai.config.client import DEFAULT_RULES_STRING, SweepConfig, get_blocked_dirs
 from sweepai.config.server import (
     ENV,
     GITHUB_BOT_USERNAME,
@@ -266,7 +261,7 @@ def create_config_pr(
                 "Create sweep.yaml",
                 GITHUB_DEFAULT_CONFIG.format(
                     branch=sweep_bot.repo.default_branch,
-                    additional_rules=DEFAULT_RULES,
+                    additional_rules=DEFAULT_RULES_STRING,
                 ),
                 branch=branch_name,
             )

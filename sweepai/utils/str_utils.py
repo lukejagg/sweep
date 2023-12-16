@@ -3,9 +3,9 @@ import re
 UPDATES_MESSAGE = """\
 ### 🎉 Latest improvements to Sweep:
 
+* We just released a [dashboard](https://progress.sweep.dev) to track Sweep's progress on your issue in real-time, showing every stage of the process – from search to planning and coding.
 * Sweep uses OpenAI's latest Assistant API to **plan code changes** and **modify code**! This is 3x faster and *significantly* more reliable as it allows Sweep to edit code and validate the changes in tight iterations, the same way as a human would.
-* Sweep now uses the `rope` library to refactor Python! Check out [Large Language Models are Bad at Refactoring Code](https://docs.sweep.dev/blogs/refactor-python). To have Sweep refactor your code, try `sweep: Refactor <your_file>.py`!
-"""
+* Try using the GitHub issues extension to create Sweep issues directly from your editor! [GitHub Issues and Pull Requests](https://marketplace.visualstudio.com/items?itemName=GitHub.vscode-pull-request-github)."""
 
 sep = "\n---\n"
 bot_suffix_starring = ""
@@ -34,7 +34,7 @@ num_full_files = 2
 ordinal = lambda n: str(n) + (
     "th" if 4 <= n <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
 )
-format_exit_code = lambda exit_code: "✓" if exit_code == 0 else f"❌ (`{exit_code}`)"
+format_sandbox_success = lambda success: "✓" if success else f"❌ (`Sandbox Failed`)"
 
 
 def create_collapsible(summary: str, body: str, opened: bool = False):
@@ -86,4 +86,10 @@ def clean_logs(logs: str):
 
 
 def extract_lines(text: str, start: int, end: int):
-    return "\n".join(text.splitlines(keepends=True)[start:end])
+    lines = text.splitlines(keepends=True)
+    return "\n".join(lines[max(0, start) : min(len(lines), end)])
+
+
+def add_line_numbers(text: str, start: int = 0):
+    lines = text.splitlines(keepends=True)
+    return "".join(f"{start + i} | {line}" for i, line in enumerate(lines))

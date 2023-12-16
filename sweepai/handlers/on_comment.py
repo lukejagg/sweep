@@ -34,8 +34,8 @@ from sweepai.handlers.on_review import get_pr_diffs
 from sweepai.utils.chat_logger import ChatLogger
 from sweepai.utils.event_logger import posthog
 from sweepai.utils.github_utils import ClonedRepo, get_github_client
+from sweepai.utils.progress import TicketProgress
 from sweepai.utils.prompt_constructor import HumanMessageCommentPrompt
-from sweepai.utils.search_utils import search_snippets
 from sweepai.utils.ticket_utils import prep_snippets
 
 num_of_snippets_to_query = 30
@@ -238,7 +238,7 @@ def on_comment(
         branch_name = (
             pr.head.ref if pr_number else pr.pr_head  # pylint: disable=no-member
         )
-        cloned_repo = ClonedRepo(repo_full_name, installation_id, branch=branch_name)
+        cloned_repo = ClonedRepo(repo_full_name, installation_id, branch=branch_name, repo=repo, token=_token)
 
         # Generate diffs for this PR
         pr_diff_string = None
@@ -296,8 +296,15 @@ def on_comment(
             try:
                 search_query = (comment).strip("\n")
                 formatted_query = (f"{comment}").strip("\n")
-                repo_context_manager = prep_snippets(cloned_repo, search_query)
-                repo_context_manager = get_relevant_context(formatted_query, repo_context_manager)
+                repo_context_manager = prep_snippets(
+                    cloned_repo, search_query, TicketProgress(tracking_id="none")
+                )
+                repo_context_manager = get_relevant_context(
+                    formatted_query,
+                    repo_context_manager,
+                    TicketProgress(tracking_id="none"),
+                    chat_logger=chat_logger,
+                )
                 snippets = repo_context_manager.current_top_snippets
                 tree = str(repo_context_manager.dir_obj)
             except Exception as e:

@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+import ast
+import os
 import re
 import traceback
+import uuid
 from dataclasses import dataclass
+from io import StringIO
 
 import tiktoken
+from pylint.lint import Run
+from pylint.reporters.text import TextReporter
+from tree_sitter import Node
+from tree_sitter_languages import get_parser
 
 from sweepai.core.entities import Snippet
 from sweepai.logn import logger
+from sweepai.utils.chat_logger import discord_log_error
+from tree_sitter_languages import get_parser
 
 
 def non_whitespace_len(s: str) -> int:  # new len function
@@ -177,11 +187,81 @@ def naive_chunker(code: str, line_count: int = 30, overlap: int = 15):
     return chunks
 
 
+def check_syntax(file_path: str, code: str) -> tuple[bool, str]:
+    ext = file_path.split(".")[-1]
+    if ext in extension_to_language:
+        language = extension_to_language[ext]
+    else:
+        return True, "Unsupported file extension, skipping syntax check."
+    parser = get_parser(language)
+    tree = parser.parse(code.encode("utf-8"))
+
+    if language == "python":
+        # First check for syntax errors
+        try:
+            ast.parse(code)
+        except SyntaxError as e:
+            error_message = f"Python syntax error: {e.msg} at line {e.lineno}"
+            return False, error_message
+
+    def find_deepest_error(node: Node):
+        deepest_error = None
+        if node.has_error:
+            deepest_error = node
+        for child in node.children:
+            child_error = find_deepest_error(child)
+            if child_error:
+                deepest_error = child_error
+        return deepest_error
+
+    error_location = find_deepest_error(tree.root_node)
+    if error_location:
+        line_number, _ = error_location.start_point
+        error_start = max(0, line_number - 10)
+        error_span = "\n".join(code.split("\n")[error_start:line_number])
+        error_message = f"Invalid syntax found within or before the lines {error_start}-{line_number}, displayed below:\n{error_span}"
+        return (False, error_message)
+    return True, ""
+
+
+def check_code(file_path: str, code: str) -> tuple[bool, str]:
+    is_valid, error_message = check_syntax(file_path, code)
+    if not is_valid:
+        return is_valid, error_message
+    ext = file_path.split(".")[-1]
+    if ext == "py":
+        file_hash = uuid.uuid4().hex
+        new_file = os.path.join("/tmp", file_hash + "_" + os.path.basename(file_path))
+        try:
+            with open(new_file, "w") as f:
+                f.write(code)
+            pylint_output = StringIO()
+            reporter = TextReporter(pylint_output)
+            Run(
+                [
+                    new_file,
+                    "--errors-only",
+                    "--disable=import-error",
+                    "--disable=relative-beyond-top-level",
+                ],
+                reporter=reporter,
+                do_exit=False,
+            )
+            error_message = pylint_output.getvalue()
+            try:
+                os.remove(new_file)
+            except FileNotFoundError:
+                pass
+            if error_message:
+                return False, error_message
+        except Exception as e:
+            discord_log_error("Pylint BS:\n" + e + traceback.format_exc())
+    return True, ""
+
+
 def chunk_code(
     code: str, path: str, MAX_CHARS: int = 1500, coalesce: int = 100
 ) -> list[Snippet]:
-    from tree_sitter_languages import get_parser
-
     ext = path.split(".")[-1]
     if ext in extension_to_language:
         language = extension_to_language[ext]

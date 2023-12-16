@@ -1,3 +1,4 @@
+import multiprocessing
 import re
 import traceback
 from collections import Counter, defaultdict
@@ -9,7 +10,12 @@ from whoosh.analysis import Token, Tokenizer
 
 from sweepai.core.entities import Snippet
 from sweepai.logn import logger
+from sweepai.utils.progress import TicketProgress
 
+def compute_document_tokens(content): # method that offloads the computation to a separate process
+    tokenizer = CodeTokenizer()
+    tokens = [token.text for token in tokenizer(content)]
+    return tokens
 
 class CustomIndex:
     def __init__(self):
@@ -21,13 +27,12 @@ class CustomIndex:
         self.metadata = {}  # Store custom metadata here
         self.tokenizer = CodeTokenizer()
 
-    def add_document(self, title, content, metadata={}):
+    def add_document(self, title, tokens, metadata={}):
         doc_id = title  # You can use title as doc_id or make it more unique
         self.metadata[doc_id] = metadata
-        self.index_document(doc_id, title + content)
+        self.index_document(doc_id, tokens)
 
-    def index_document(self, doc_id, content):
-        tokens = [token.text for token in self.tokenizer(content)]
+    def index_document(self, doc_id, tokens):
         doc_length = len(tokens)
         self.doc_lengths[doc_id] = doc_length
         self.avg_doc_length = sum(self.doc_lengths.values()) / len(self.doc_lengths)
@@ -68,6 +73,8 @@ class CustomIndex:
 
         return results_with_metadata
 
+word_pattern = re.compile(r"\b\w+\b")
+variable_pattern = re.compile(r"([A-Z][a-z]+|[a-z]+|[A-Z]+(?=[A-Z]|$))")
 
 def tokenize_call(code):
     def check_valid_token(token):
@@ -95,10 +102,8 @@ def tokenize_call(code):
                     )
                     pos += 1
                 offset += len(part) + 1
-        elif re.search(r"[A-Z][a-z]|[a-z][A-Z]", text):  # pascal and camelcase
-            parts = re.findall(
-                r"([A-Z][a-z]+|[a-z]+|[A-Z]+(?=[A-Z]|$))", text
-            )  # first one "MyVariable" second one "myVariable" third one "MYVariable"
+        elif parts := variable_pattern.findall(text):  # pascal and camelcase
+             # first one "MyVariable" second one "myVariable" third one "MYVariable"
             offset = 0
             for part in parts:
                 if check_valid_token(part):
@@ -195,10 +200,9 @@ class Document:
 
 
 def snippets_to_docs(snippets: list[Snippet], len_repo_cache_dir):
-    from tqdm import tqdm
 
     docs = []
-    for snippet in tqdm(snippets):
+    for snippet in snippets:
         docs.append(
             Document(
                 title=snippet.file_path[len_repo_cache_dir:],
@@ -210,22 +214,30 @@ def snippets_to_docs(snippets: list[Snippet], len_repo_cache_dir):
     return docs
 
 
-def prepare_index_from_snippets(snippets, len_repo_cache_dir=0):
-    all_docs = snippets_to_docs(snippets, len_repo_cache_dir)
+def prepare_index_from_snippets(
+    snippets, len_repo_cache_dir=0, ticket_progress: TicketProgress | None = None
+):
+    all_docs: list[Document] = snippets_to_docs(snippets, len_repo_cache_dir)
     if len(all_docs) == 0:
         return None
-    # Create the index based on the schema
     index = CustomIndex()
+    if ticket_progress:
+        ticket_progress.search_progress.indexing_total = len(all_docs)
+        ticket_progress.save()
+    all_tokens = []
     try:
-        for doc in tqdm(all_docs, total=len(all_docs)):
-            index.add_document(
-                title=f"{doc.title}:{doc.start}:{doc.end}", content=doc.content
-            )
+        with multiprocessing.Pool(processes=8) as p:
+            for i, document_tokens in enumerate(p.imap(compute_document_tokens, [doc.content for doc in all_docs])):
+                all_tokens.append(document_tokens)
+                if ticket_progress and i % 200 == 0:
+                    ticket_progress.search_progress.indexing_progress = i
+                    ticket_progress.save()
+        for doc, document_tokens in tqdm(zip(all_docs, all_tokens), desc="Indexing"):
+            index.add_document(title=f"{doc.title}:{doc.start}:{doc.end}", tokens=document_tokens)
     except FileNotFoundError as e:
         logger.error(e)
 
     return index
-
 
 @dataclass
 class Documentation:
@@ -234,6 +246,10 @@ class Documentation:
 
 
 def prepare_index_from_docs(docs):
+    """Prepare an index from a list of documents.
+
+    This function takes a list of documents as input and returns an index.
+    """
     all_docs = [Documentation(url, content) for url, content in docs]
     if len(all_docs) == 0:
         return None
@@ -241,13 +257,18 @@ def prepare_index_from_docs(docs):
     index = CustomIndex()
     try:
         for doc in tqdm(all_docs, total=len(all_docs)):
-            index.add_document(title=f"{doc.url}", content=doc.content)
+            index.add_document(title=f"{doc.url}", tokens=compute_document_tokens(doc.content))
     except FileNotFoundError as e:
         logger.error(e)
     return index
 
 
 def search_docs(query, index: CustomIndex):
+    """Search the documents based on a query and an index.
+
+    This function takes a query and an index as input and returns a dictionary of document IDs
+    and their corresponding scores.
+    """
     """Title, score, content"""
     if index == None:
         return {}
@@ -269,6 +290,11 @@ def search_docs(query, index: CustomIndex):
 
 
 def search_index(query, index: CustomIndex):
+    """Search the index based on a query.
+
+    This function takes a query and an index as input and returns a dictionary of document IDs
+    and their corresponding scores.
+    """
     """Title, score, content"""
     if index == None:
         return {}

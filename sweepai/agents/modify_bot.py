@@ -4,7 +4,11 @@ import re
 import uuid
 from dataclasses import dataclass
 
-from sweepai.agents.assistant_modify import new_modify
+from sweepai.agents.assistant_function_modify import (
+    excel_col_to_int,
+    function_modify,
+    int_to_excel_col,
+)
 from sweepai.agents.complete_code import ExtractLeftoverComments
 from sweepai.agents.graph_child import extract_python_span
 from sweepai.agents.prune_modify_snippets import PruneModifySnippets
@@ -21,6 +25,7 @@ from sweepai.core.update_prompts import (
 from sweepai.utils.autoimport import add_auto_imports
 from sweepai.utils.diff import generate_diff, sliding_window_replacement
 from sweepai.utils.github_utils import ClonedRepo
+from sweepai.utils.progress import AssistantConversation, TicketProgress
 from sweepai.utils.utils import chunk_code
 
 fetch_snippets_system_prompt = """You are a masterful engineer. Your job is to extract the original sections from the code that should be modified.
@@ -182,21 +187,6 @@ def strip_backticks(s: str) -> str:
     return s
 
 
-def int_to_excel_col(n):
-    result = ""
-    while n > 0:
-        n, remainder = divmod(n - 1, 26)
-        result = chr(65 + remainder) + result
-    return result
-
-
-def excel_col_to_int(s):
-    result = 0
-    for char in s:
-        result = result * 26 + (ord(char) - 64)
-    return result - 1
-
-
 def convert_comment_to_deletion(original, updated):
     # check both are single lines
     if "\n" in original or "\n" in updated:
@@ -218,6 +208,7 @@ class ModifyBot:
         parent_bot: ChatGPT = None,
         old_file_contents: str = "",
         current_file_diff: str = "",
+        ticket_progress: TicketProgress | None = None,
         **kwargs,
     ):
         self.fetch_snippets_bot: ChatGPT = ChatGPT.from_system_message_string(
@@ -243,6 +234,7 @@ class ModifyBot:
         self.old_file_contents = old_file_contents
         self.current_file_diff = current_file_diff
         self.additional_diffs = ""
+        self.ticket_progress = ticket_progress
 
     def get_diffs_message(self, file_contents: str):
         if self.current_file_diff == "" and self.old_file_contents == file_contents:
@@ -268,12 +260,18 @@ class ModifyBot:
         file_change_request: FileChangeRequest,
         cloned_repo: ClonedRepo,
         chunking: bool = False,
+        assistant_conversation: AssistantConversation | None = None,
+        seed: str | None = None,
     ):
-        new_file = new_modify(
+        new_file = function_modify(
             request=file_change_request.instructions,
             file_path=os.path.join(cloned_repo.repo_dir, file_path),
+            file_contents=file_contents,
             additional_messages=self.additional_messages,
             chat_logger=self.chat_logger,
+            ticket_progress=self.ticket_progress,
+            assistant_conversation=assistant_conversation,
+            seed=seed,
         )
         if new_file is not None:
             return add_auto_imports(
@@ -332,7 +330,7 @@ class ModifyBot:
                     chunking=chunking,
                     analysis_and_identification=analysis_and_identification,
                 )
-        new_file = add_auto_imports(file_path, cloned_repo.repo_dir, new_file)
+        # new_file = add_auto_imports(file_path, cloned_repo.repo_dir, new_file)
         return new_file
 
     def get_snippets_to_modify(

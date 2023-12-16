@@ -5,6 +5,7 @@ import re
 import string
 import uuid
 from dataclasses import dataclass
+from difflib import unified_diff
 from typing import Any, ClassVar, Literal, Type, TypeVar
 from urllib.parse import quote
 
@@ -15,7 +16,7 @@ from sweepai.utils.str_utils import (
     blockquote,
     clean_logs,
     create_collapsible,
-    format_exit_code,
+    format_sandbox_success,
 )
 
 Self = TypeVar("Self", bound="RegexMatchableBaseModel")
@@ -125,13 +126,12 @@ def create_error_logs(
                 "\n\n".join(
                     [
                         create_collapsible(
-                            f"<code>{execution.command.format(file_path=file_path)}</code> {i + 1}/{len(sandbox_response.executions)} {format_exit_code(execution.exit_code)}",
-                            f"<pre>{clean_logs(execution.output)}</pre>",
-                            i == len(sandbox_response.executions) - 1,
+                            f"<code>{output}</code> {i + 1}/{len(sandbox_response.outputs)} {format_sandbox_success(sandbox_response.success)}",
+                            f"<pre>{clean_logs(output)}</pre>",
+                            i == len(sandbox_response.outputs) - 1,
                         )
-                        for i, execution in enumerate(sandbox_response.executions)
-                        if len(sandbox_response.executions) > 0
-                        # And error code check
+                        for i, output in enumerate(sandbox_response.outputs)
+                        if len(sandbox_response.outputs) > 0
                     ]
                 )
             ),
@@ -160,11 +160,14 @@ class FileChangeRequest(RegexMatchableBaseModel):
     change_type: Literal["modify"] | Literal["create"] | Literal["delete"] | Literal[
         "rename"
     ] | Literal["rewrite"] | Literal["check"] | Literal["refactor"] | Literal["test"]
-    _regex = r"""<(?P<change_type>[a-z_]+)\s+file=\"(?P<filename>[a-zA-Z0-9/\\\.\[\]\(\)\_\+\- ]*?)\"( start_line=\"(?P<start_line>.*?)\")?( end_line=\"(?P<end_line>.*?)\")?( entity=\"(.*?)\")?( source_file=\"(?P<source_file>.*?)\")?( destination_module=\"(?P<destination_module>.*?)\")?( relevant_files=\"(?P<raw_relevant_files>.*?)\")?>(?P<instructions>.*?)\s*<\/\1>"""
+    _regex = r"""<(?P<change_type>[a-z_]+)\s+file=\"(?P<filename>[a-zA-Z0-9/\\\.\[\]\(\)\_\+\- @]*?)\"( start_line=\"(?P<start_line>.*?)\")?( end_line=\"(?P<end_line>.*?)\")?( entity=\"(.*?)\")?( source_file=\"(?P<source_file>.*?)\")?( destination_module=\"(?P<destination_module>.*?)\")?( relevant_files=\"(?P<raw_relevant_files>.*?)\")?(.*?)>(?P<instructions>.*?)\s*<\/\1>"""
     entity: str | None = None
     source_file: str | None = None
+    old_content: str | None = None
     new_content: str | None = None
     raw_relevant_files: str | None = None
+    start_line: int | str | None = None
+    end_line: int | str | None = None
     start_and_end_lines: list[tuple] = []
     comment_line: int | None = None
     failed_sandbox_test: bool | None = False
@@ -177,6 +180,12 @@ class FileChangeRequest(RegexMatchableBaseModel):
     commit_hash_url: str | None = None
     id_: str = Field(default_factory=lambda: str(uuid.uuid4()))
 
+    def get_edit_url(self, repo_full_name: str, branch_name: str):
+        url = f"https://github.com/{repo_full_name}/edit/{branch_name}/{self.filename}"
+        if self.start_line and self.end_line:
+            url += f"#L{self.start_line}-L{self.end_line}"
+        return url
+
     @classmethod
     def from_string(cls: Type[Self], string: str, **kwargs) -> Self:
         result = super().from_string(string, **kwargs)
@@ -188,6 +197,10 @@ class FileChangeRequest(RegexMatchableBaseModel):
                 result.source_file = result.source_file.split(" ")[0]
         if result.instructions.startswith("*"):
             result.instructions = "•" + result.instructions[1:]
+        if result.start_line:
+            result.start_line = int(result.start_line)
+        if result.end_line:
+            result.end_line = int(result.end_line)
         return result
 
     @property
@@ -264,6 +277,17 @@ class FileChangeRequest(RegexMatchableBaseModel):
         # if self.change_type == "check":
         #     return f"Run GitHub Actions for `{self.filename}` with results:\n{self.instructions}"
         return f"{self.change_type.capitalize()} {self.filename} with contents:\n{self.instructions}"
+
+    @property
+    def diff_display(self):
+        if self.old_content and self.new_content:
+            diff = unified_diff(
+                self.old_content.splitlines(keepends=True),
+                self.new_content.splitlines(keepends=True),
+            )
+            diff_text = "".join(diff)
+            return f"<pre>{diff_text}</pre>"
+        return ""
 
 
 class FileCreation(RegexMatchableBaseModel):
@@ -533,11 +557,9 @@ class SandboxExecution:
 
 class SandboxResponse(BaseModel):
     success: bool
-    error_messages: list[str]
     outputs: list[str]
-    executions: list[SandboxExecution]
     updated_content: str
-    sandbox: dict
+    error_messages: list[str]
 
 
 class MaxTokensExceeded(Exception):
